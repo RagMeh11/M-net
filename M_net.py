@@ -1,6 +1,10 @@
 '''
     THEANO_FLAGS=mode=FAST_RUN,device=gpu,floatX=float32 python *.py
+'''
 
+'''
+M-net: ISBI 2017 paper.
+Please use the older version of Keras (March-2016). Please download it from my github repository.
 '''
 
 from __future__ import print_function
@@ -26,20 +30,37 @@ from sklearn.metrics import f1_score
 from sklearn.metrics import accuracy_score
 import h5py
 
+##############################################################################
 ###############################################################################
 
+'''
+Defining some helper functions
+'''
 def my_to_categorical(y, nb_classes=None):
 	Y = np.zeros([y.shape[0],y.shape[1],y.shape[2],y.max()+1],dtype='uint8')
 	Y[np.nonzero(y)[0],np.nonzero(y)[1],np.nonzero(y)[2],y[np.nonzero(y)[0],np.nonzero(y)[1],np.nonzero(y)[2]]] = 1
 	Y[np.where(y == 0)[0],np.where(y == 0)[1],np.where(y == 0)[2],y[np.where(y == 0)[0],np.where(y == 0)[1],np.where(y == 0)[2]]] = 1  
 	return Y
 
+def accuracy(Y_pre, Y_true):
+	accu = ((np.sum(Y_true[np.nonzero(Y_true)]==Y_pre[np.nonzero(Y_true)],dtype='float32'))/(np.count_nonzero(Y_true)))
+	zero_accu = ((np.sum(Y_true[np.where(Y_true == 0)]==Y_pre[np.where(Y_true == 0)],dtype='float32'))/(np.size(Y_true)-np.count_nonzero(Y_true)))
+	return [accu,zero_accu]
 
+###########################################################################################################################
+
+'''
+Definng total number of classes and 2D image Dimensions
+'''
 nb_classes = 32
 img_w = 256
 img_h = 256
 
+#########################################################################################################
 ###########################################################################################################
+'''
+Network architecture
+'''
 graph = Graph()
 
 graph.add_input(name='input', input_shape=(img_w,img_h,51,1))
@@ -198,17 +219,30 @@ sgd = SGD(lr=0.005, decay=1e-6, momentum=0.9, nesterov=True)
 adm = Adam(lr=0.001,beta_1=0.9,beta_2=0.999,epsilon=1e-08)
 graph.compile(optimizer=adm, loss={'output':'categorical_crossentropy'})
 
+############################################################################################
+#############################################################################################
 
-
-b_size = 8
+'''
+Some variable which will be used
+'''
+tr_images = 9     # NUmber of Training  Images
+valid_images = 3  # Number of validation Images
+test_images = 6   # Number of Testing Images
+no_ep = 30        # Total Number of Epochs   
+ep_lap = 2 
+weig_load = 0     # weight load epoch number
+b_size = 8        # batch size
+best_v_dice = 0   # best validation dice
+best_epoch = 0    # epoch number at which best validation dice was achieved
 
 main_path ='./IBSR18_slices/' 
 
 ######################################################
+'''
+class weights for handling class imbalance 
+'''
 class_im = sio.loadmat(main_path+'Data/training/total_class_imbalance.mat')
 hist = class_im['total_hist'].squeeze()
-
-
 hist = hist.astype('float32')
 print(hist.shape)
 ss=sum(hist).astype('float32')
@@ -217,8 +251,16 @@ print(hist[0])
 class_weight = dict([(i, ss/hist[i]) for i in range(nb_classes)])
 print(class_weight)
 
-############################################################################
+######################################################
 
+if weig_load != 0: 
+	graph.load_weights(main_path+'CNN_output/weights/weights-%d.hdf5'%(weig_load))
+	print('\n-----------------------Loading Weight %d---------------------------\n'%(weig_load))
+
+############################################################################
+'''
+Load whole training data at one go
+'''
 training_data = np.load(main_path+'Data/training/npz/whole.npz')
 training_inp = training_data['img'].astype('float32')
 training_gt = training_data['gt'].astype('uint8')
@@ -233,10 +275,10 @@ training_gt_category = my_to_categorical(training_gt, nb_classes)
 print('training GT after categorical')
 print(training_gt_category.shape)
 
-
 if(np.all(training_gt == np.argmax(training_gt_category,axis=-1))):
 	print('Proper Conversion to categorical')
 
+###############################################################################	
 ###################################################################################
 
 for ep in range(weig_load+1,no_ep+1):
@@ -244,13 +286,9 @@ for ep in range(weig_load+1,no_ep+1):
 	print('#########################################3\n\n')
 
 	print('Training Model:\n\n')
-
 	print('Epoch: %d' %(ep))
     
-
-        MCP=keras.callbacks.ModelCheckpoint(main_path+'CNN_output/weights/weights-%d.hdf5'%(ep), monitor='val_loss',save_best_only=False)	
-		
-
+        MCP=keras.callbacks.ModelCheckpoint(main_path+'CNN_output/weights/weights-%d.hdf5'%(ep), monitor='val_loss',save_best_only=False)
 	
 	graph.fit({'input':training_inp,'output':training_gt_category}, batch_size=b_size,  verbose=1 ,nb_epoch=1, callbacks = [MCP], class_weight=class_weight)
 	
@@ -307,8 +345,8 @@ for ep in range(weig_load+1,no_ep+1):
 	    	print('Training Overall Accuracy: %f'%(t_acc))
 	    	print('Training Score: %f'%(scr))
 			
-
 	######################################################################################################
+		
 		print('\n-----------------------------------------\n\n')
 		print('validation Accuracy:')
 		t_dice = 0.0
@@ -353,7 +391,67 @@ for ep in range(weig_load+1,no_ep+1):
 	    	scr = scr/valid_images
 	    	t_dice = t_dice/valid_images
 	    	t_acc = t_acc/valid_images
+		if(t_dice > best_v_dice):
+			best_v_dice = t_dice
+			best_epoch = ep
 	    	print('\n\nvalidation Overall Dice Coeffient: %f'%(t_dice))
 	    	print('validation Overall Accuracy: %f'%(t_acc))
 	    	print('validation Score: %f'%(scr))
 			
+######################################################################################################
+######################################################################################################
+
+
+'''
+Test architecture performance on model weight for which best validation dice was achieved 
+'''
+
+print('\n-----------------------------------------\n\n')
+print('Testing Accuracy:')
+t_dice = 0.0
+t_acc = 0.0
+scr =0.0	
+
+graph.load_weights(main_path+'CNN_output/weights/weights-%d.hdf5'%(best_epoch))
+print('\n-----------------------Loading Best Weight %d for testing---------------------------\n'%(best_epoch))
+
+for test_imgn in range(test_images):
+	print('\nloading image %d for Accuracy\n'% (test_imgn+1))
+	npz_contents = np.load(main_path+'Data/testing/npz/%d.npz'%(test_imgn+1))
+	print('data loaded')
+	test_inp = npz_contents['img'].astype('float32')
+	test_gt = npz_contents['gt'].astype('uint8')
+	test_inp = np.transpose(test_inp)
+	test_inp = test_inp.reshape(test_inp.shape+(1,)).astype('float32')
+        test_gt = np.transpose(test_gt)
+            
+	print (test_inp.shape)
+			
+	prediction = graph.predict({'input':test_inp}, batch_size=b_size)
+
+	    	
+	test_pre = np.argmax(prediction['output'],axis=-1).astype('uint8')
+
+	test_pre = np.reshape(test_pre,test_pre.shape[0]*test_pre.shape[1]*test_pre.shape[2]).astype('uint8')
+	test_gt = np.reshape(test_gt,test_gt.shape[0]*test_gt.shape[1]*test_gt.shape[2]).astype('uint8')
+
+	[my_accu,zero_accu] = accuracy(test_pre, test_gt)
+	skl_dice = f1_score(test_gt, test_pre,average='macro')
+	skl_accu = accuracy_score(test_gt, test_pre)
+
+	print ('\nskl accu = ',skl_accu,'skl dice coeff = ',skl_dice,'zero accu = ',zero_accu,'my_accu = ',my_accu)
+	test_pre = np.reshape(test_pre,[test_inp.shape[0],test_inp.shape[1],test_inp.shape[2]]).astype('uint8')
+	score = 0
+	t_dice+=skl_dice
+	t_acc += skl_accu
+	scr=scr+score
+	fp1 = open(log_file,'a')
+	fp1.write('best epoch:%d image:%d test accuracy:%f Dice Coeff:%f\n'%(best_epoch,test_imgn,skl_accu,skl_dice))
+	fp1.close()
+	
+scr = scr/test_images
+t_dice = t_dice/test_images
+t_acc = t_acc/test_images
+print('\n\ntesting Overall Dice Coeffient: %f'%(t_dice))
+print('testing Overall Accuracy: %f'%(t_acc))
+print('testing Score: %f'%(scr))
